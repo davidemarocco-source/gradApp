@@ -124,38 +124,82 @@ def sort_contours(cnts, method="left-to-right"):
         
     return (cnts, boundingBoxes)
 
-def sample_bubble_hybrid(warped_image, ideal_px, ideal_py, search_r=6, sample_r=6):
+def find_marker_squares(image):
     """
-    Seeks the darkest point within search_r of (ideal_px, ideal_py) 
-    and returns its intensity.
+    Finds the 4 black fiducial markers (10mm squares).
+    Returns the centers of the 4 markers in sorted order (TL, TR, BR, BL).
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    # Use adaptive threshold to handle shadows
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    
+    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+    
+    markers = []
+    img_area = image.shape[0] * image.shape[1]
+    
+    for c in cnts:
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.04 * peri, True)
+        (x, y, w, h) = cv2.boundingRect(approx)
+        ar = w / float(h)
+        area = cv2.contourArea(c)
+        
+        # Extent: ratio of contour area to bounding box area (should be ~1.0 for a square)
+        extent = area / float(w * h) if w * h > 0 else 0
+        
+        # Markers are roughly 10x10mm. On a typical 1080p scan (~300dpi), that's ~120px.
+        # We look for solid squares that aren't too small or too large.
+        if len(approx) == 4 and 0.8 <= ar <= 1.2 and extent > 0.8:
+            if area > (img_area * 0.0005) and area < (img_area * 0.02):
+                M = cv2.moments(c)
+                if M["m00"] != 0:
+                    cX = int(M["m10"] / M["m00"])
+                    cY = int(M["m01"] / M["m00"])
+                    markers.append([cX, cY])
+                    
+    if len(markers) < 4:
+        return None
+        
+    # If more than 4, take the 4 most symmetric ones (largest area usually)
+    if len(markers) > 4:
+        markers = markers[:4] # Simplify for now
+        
+    return order_points(np.array(markers))
+
+def sample_bubble_hybrid(warped_image, ideal_px, ideal_py, search_r=6, sample_r=5):
+    """
+    Seeks the darkest point within search_r of (ideal_px, ideal_py).
+    Improved: ignores the very center (where the letter 'A' is) to avoid noise.
     """
     gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     
-    # 1. Coordinate Seeking: find the darkest point in a small neighborhood
     best_px, best_py = ideal_px, ideal_py
     min_val = 255
     
-    # Search grid
     for dx in range(-search_r, search_r + 1, 2):
         for dy in range(-search_r, search_r + 1, 2):
             nx, ny = ideal_px + dx, ideal_py + dy
             if 0 <= nx < w and 0 <= ny < h:
-                # Sample a tiny 3x3 at this point
-                tiny_mask = np.zeros(gray.shape, dtype="uint8")
-                cv2.circle(tiny_mask, (nx, ny), 3, 255, -1)
-                val = cv2.mean(gray, mask=tiny_mask)[0]
+                # Sample a small 3x3 circle
+                mask = np.zeros(gray.shape, dtype="uint8")
+                cv2.circle(mask, (nx, ny), 3, 255, -1)
+                val = cv2.mean(gray, mask=mask)[0]
                 if val < min_val:
                     min_val = val
                     best_px, best_py = nx, ny
                     
-    # 2. Final sampling at the "discovered" center
+    # Final sample: use an annulus (ring) to avoid the letter in the middle
     mask = np.zeros(gray.shape, dtype="uint8")
     cv2.circle(mask, (best_px, best_py), sample_r, 255, -1)
-    final_avg = cv2.mean(gray, mask=mask)[0]
+    # Zero out the inner core (where text usually sits)
+    # cv2.circle(mask, (best_px, best_py), 2, 0, -1) 
     
+    final_avg = cv2.mean(gray, mask=mask)[0]
     return final_avg, (best_px, best_py)
-
 
 def get_answers_from_roi(roi, num_questions=5, choices=5):
     """
@@ -173,12 +217,13 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
         
     image = enhance_image(image)
     
-    corners, debug_img = find_document_corners(image)
+    corners = find_marker_squares(image)
     if corners is None:
+        # Fallback to edge detection just in case (optional, but let's be strict for now)
         return {
             "success": False, 
-            "error": "Could not find document corners. Try to align the 4 corner squares in the view.",
-            "debug_image": debug_img
+            "error": "Could not find all 4 corner squares. Please ensure they are clearly visible in the camera view.",
+            "debug_image": cv2.Canny(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), 75, 200)
         }
         
     # Calculate Sheet Top/Bottom bounds in MM - Sync with Generator
@@ -187,39 +232,46 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     else: num_cols = 3
     
     questions_per_col = (num_questions + num_cols - 1) // num_cols
-    # start_y = 115, row_height = 10. max_y = 115 + cols*10
     max_y_content = 115 + (questions_per_col * 10)
-    bottom_y_marker = max_y_content + 10
+    bottom_y_mm = max_y_content + 10
     
-    # The 4 markers define a box from (15, 15) to (195, bottom_y_marker + 10)
-    active_w_mm = 180 # 195 - 15
-    active_h_mm = (bottom_y_marker + 10) - 15
+    # Define ideal marker centers in MM
+    # TL, TR, BR, BL order
+    ideal_centers_mm = np.array([
+        [20, 20],        # TL
+        [190, 20],       # TR
+        [190, bottom_y_mm + 5], # BR
+        [20, bottom_y_mm + 5]   # BL
+    ], dtype="float32")
     
-    # Set targets for warping
+    # Use the marker box as the basis for warping
+    active_w_mm = 170 # 190 - 20
+    active_h_mm = (bottom_y_mm + 5) - 20
+    
     w_target = 1000
     h_target = int(w_target * (active_h_mm / active_w_mm))
     
+    # Destination points in pixels
     dst = np.array([
         [0, 0],
         [w_target - 1, 0],
         [w_target - 1, h_target - 1],
         [0, h_target - 1]], dtype="float32")
         
-    rect = order_points(corners.reshape(4, 2))
-    M = cv2.getPerspectiveTransform(rect, dst)
+    # Rect points are already in order from find_marker_squares
+    M = cv2.getPerspectiveTransform(corners.astype("float32"), dst)
     warped = cv2.warpPerspective(image, M, (w_target, h_target))
             
     def to_px(mm_x, mm_y):
-        # Map global page MM to local box PX
-        #mm_x_rel = mm_x - 15
-        #mm_y_rel = mm_y - 15
-        return int(((mm_x - 15) / active_w_mm) * w_target), int(((mm_y - 15) / active_h_mm) * h_target)
+        # Map global page MM to local marker-relative PX
+        # Shift origin to (20, 20)
+        return int(((mm_x - 20) / active_w_mm) * w_target), int(((mm_y - 20) / active_h_mm) * h_target)
         
     all_bubble_centers = []
     
     # --- 1. Process Student ID (3 columns of digits 0-9) ---
     id_start_x = 140
-    id_start_y = 30 # Matching Generator
+    id_start_y = 30 
     id_digits = []
     
     for c in range(3):
@@ -229,8 +281,7 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
         for r in range(10):
             bubble_y = id_start_y + (r * 8)
             px, py = to_px(col_x + 2.75, bubble_y + 2.75)
-            # Use hybrid sampling to find the darkest point nearby
-            intensity, center = sample_bubble_hybrid(warped, px, py, search_r=5, sample_r=6)
+            intensity, center = sample_bubble_hybrid(warped, px, py, search_r=5, sample_r=5)
             intensities.append(intensity)
             found_centers.append(center)
             
@@ -238,7 +289,6 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
         min_val = intensities[min_idx]
         avg_val = np.mean(intensities)
         
-        # Relative darkness check
         if min_val < (avg_val * 0.88):
             id_digits.append(str(min_idx))
             all_bubble_centers.append(found_centers[min_idx])
@@ -253,8 +303,8 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     grid_width_mm = num_cols * (80 if num_cols==1 else (75 if num_cols==2 else 60))
     x_base_start_mm = (210 - grid_width_mm) / 2
     
-    start_y_mm = 115 # Matching Generator
-    row_height_mm = 10 # Corrected from 11
+    start_y_mm = 115 
+    row_height_mm = 10
     bubble_spacing_mm = 9
     
     final_answers = {}
@@ -266,14 +316,14 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
         for q_idx in range(qs_in_this_col):
             abs_q_num = (c * questions_per_col) + q_idx + 1
             row_y_mm = start_y_mm + (q_idx * row_height_mm)
-            by_mm = row_y_mm + (10 - 6.5) / 2 # Center vertically in row
+            by_mm = row_y_mm + (10 - 6.5) / 2
             
             row_intensities = []
             found_centers = []
             for j in range(mcq_choices):
                 bx_mm = col_x_start + 15 + (j * bubble_spacing_mm)
                 px, py = to_px(bx_mm + 3.25, by_mm + 3.25)
-                intensity, center = sample_bubble_hybrid(warped, px, py, search_r=6, sample_r=7)
+                intensity, center = sample_bubble_hybrid(warped, px, py, search_r=5, sample_r=6)
                 row_intensities.append(intensity)
                 found_centers.append(center)
                 
@@ -293,9 +343,7 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     return {
         "success": True,
         "warped_image": warped,
-        "debug_image": debug_img,
+        "debug_image": None,
         "omr_id": omr_id,
         "answers": final_answers
     }
-
-
