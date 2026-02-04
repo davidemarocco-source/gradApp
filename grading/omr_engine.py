@@ -169,36 +169,34 @@ def find_marker_squares(image):
         
     return order_points(np.array(markers))
 
-def sample_bubble_hybrid(warped_image, ideal_px, ideal_py, search_r=6, sample_r=5):
+def sample_bubble_hybrid(warped_gray, ideal_px, ideal_py, search_r=6, sample_r=5):
     """
+    Turbo Version: Uses NumPy slicing for speed.
     Seeks the darkest point within search_r of (ideal_px, ideal_py).
-    Improved: ignores the very center (where the letter 'A' is) to avoid noise.
     """
-    gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
+    h, w = warped_gray.shape
     
     best_px, best_py = ideal_px, ideal_py
     min_val = 255
     
-    for dx in range(-search_r, search_r + 1, 2):
-        for dy in range(-search_r, search_r + 1, 2):
-            nx, ny = ideal_px + dx, ideal_py + dy
-            if 0 <= nx < w and 0 <= ny < h:
-                # Sample a small 3x3 circle
-                mask = np.zeros(gray.shape, dtype="uint8")
-                cv2.circle(mask, (nx, ny), 3, 255, -1)
-                val = cv2.mean(gray, mask=mask)[0]
-                if val < min_val:
-                    min_val = val
-                    best_px, best_py = nx, ny
-                    
-    # Final sample: use an annulus (ring) to avoid the letter in the middle
-    mask = np.zeros(gray.shape, dtype="uint8")
-    cv2.circle(mask, (best_px, best_py), sample_r, 255, -1)
-    # Zero out the inner core (where text usually sits)
-    # cv2.circle(mask, (best_px, best_py), 2, 0, -1) 
+    # 1. Coordinate Seeking using NumPy slicing
+    y_min, y_max = max(0, ideal_py - search_r), min(h, ideal_py + search_r + 1)
+    x_min, x_max = max(0, ideal_px - search_r), min(w, ideal_px + search_r + 1)
     
-    final_avg = cv2.mean(gray, mask=mask)[0]
+    # Extract neighborhood
+    roi = warped_gray[y_min:y_max, x_min:x_max]
+    
+    # Find min value location in ROI using numpy
+    if roi.size > 0:
+        min_loc = np.unravel_index(np.argmin(roi, axis=None), roi.shape)
+        best_py = y_min + min_loc[0]
+        best_px = x_min + min_loc[1]
+                    
+    # 2. Final sample: simple square/circular average using slice
+    sy_min, sy_max = max(0, best_py - sample_r), min(h, best_py + sample_r + 1)
+    sx_min, sx_max = max(0, best_px - sample_r), min(w, best_px + sample_r + 1)
+    
+    final_avg = np.mean(warped_gray[sy_min:sy_max, sx_min:sx_max])
     return final_avg, (best_px, best_py)
 
 def get_answers_from_roi(roi, num_questions=5, choices=5):
@@ -215,16 +213,27 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     if image is None:
         return {"success": False, "error": "Could not read image"}
         
-    image = enhance_image(image)
-    
-    corners = find_marker_squares(image)
-    if corners is None:
-        # Fallback to edge detection just in case (optional, but let's be strict for now)
+    # --- TURBO MODE: Downscale for faster marker detection ---
+    h, w = image.shape[:2]
+    max_dim = 1200
+    scale = 1.0
+    if h > max_dim or w > max_dim:
+        scale = max_dim / float(max(h, w))
+        small_img = cv2.resize(image, (int(w * scale), int(h * scale)))
+    else:
+        small_img = image
+
+    # Find markers on small image
+    small_corners = find_marker_squares(small_img)
+    if small_corners is None:
         return {
             "success": False, 
             "error": "Could not find all 4 corner squares. Please ensure they are clearly visible in the camera view.",
-            "debug_image": cv2.Canny(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), 75, 200)
+            "debug_image": cv2.Canny(cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY), 75, 200)
         }
+        
+    # Scale corners back to original size
+    corners = small_corners / scale
         
     # Calculate Sheet Top/Bottom bounds in MM - Sync with Generator
     if num_questions <= 12: num_cols = 1
@@ -235,15 +244,6 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     max_y_content = 115 + (questions_per_col * 10)
     bottom_y_mm = max_y_content + 10
     
-    # Define ideal marker centers in MM
-    # TL, TR, BR, BL order
-    ideal_centers_mm = np.array([
-        [20, 20],        # TL
-        [190, 20],       # TR
-        [190, bottom_y_mm + 5], # BR
-        [20, bottom_y_mm + 5]   # BL
-    ], dtype="float32")
-    
     # Use the marker box as the basis for warping
     active_w_mm = 170 # 190 - 20
     active_h_mm = (bottom_y_mm + 5) - 20
@@ -251,20 +251,17 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     w_target = 1000
     h_target = int(w_target * (active_h_mm / active_w_mm))
     
-    # Destination points in pixels
     dst = np.array([
         [0, 0],
         [w_target - 1, 0],
         [w_target - 1, h_target - 1],
         [0, h_target - 1]], dtype="float32")
         
-    # Rect points are already in order from find_marker_squares
     M = cv2.getPerspectiveTransform(corners.astype("float32"), dst)
     warped = cv2.warpPerspective(image, M, (w_target, h_target))
+    warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY) # One-time conversion
             
     def to_px(mm_x, mm_y):
-        # Map global page MM to local marker-relative PX
-        # Shift origin to (20, 20)
         return int(((mm_x - 20) / active_w_mm) * w_target), int(((mm_y - 20) / active_h_mm) * h_target)
         
     all_bubble_centers = []
@@ -281,7 +278,7 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
         for r in range(10):
             bubble_y = id_start_y + (r * 8)
             px, py = to_px(col_x + 2.75, bubble_y + 2.75)
-            intensity, center = sample_bubble_hybrid(warped, px, py, search_r=5, sample_r=5)
+            intensity, center = sample_bubble_hybrid(warped_gray, px, py, search_r=5, sample_r=5)
             intensities.append(intensity)
             found_centers.append(center)
             
@@ -323,7 +320,7 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
             for j in range(mcq_choices):
                 bx_mm = col_x_start + 15 + (j * bubble_spacing_mm)
                 px, py = to_px(bx_mm + 3.25, by_mm + 3.25)
-                intensity, center = sample_bubble_hybrid(warped, px, py, search_r=5, sample_r=6)
+                intensity, center = sample_bubble_hybrid(warped_gray, px, py, search_r=5, sample_r=6)
                 row_intensities.append(intensity)
                 found_centers.append(center)
                 

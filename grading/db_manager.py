@@ -78,15 +78,18 @@ def get_class_name(class_id):
     return res["name"].iloc[0] if not res.empty else None
 
 # --- Students ---
-def add_student(name, educational_id, class_id):
+def add_student(name, educational_id, class_id, omr_id=None):
     conn = get_connection()
     try:
         with conn.session as s:
-            # Find next omr_id
-            res = s.execute(text("SELECT MAX(omr_id) FROM students WHERE class_id=:class_id"), 
-                            {"class_id": class_id}).fetchone()
-            max_id = res[0]
-            next_omr_id = 1 if max_id is None else max_id + 1
+            if omr_id is None:
+                # Find next omr_id
+                res = s.execute(text("SELECT MAX(omr_id) FROM students WHERE class_id=:class_id"), 
+                                {"class_id": class_id}).fetchone()
+                max_id = res[0]
+                next_omr_id = 1 if max_id is None else max_id + 1
+            else:
+                next_omr_id = omr_id
             
             s.execute(text("INSERT INTO students (name, educational_id, omr_id, class_id) VALUES (:name, :eid, :oid, :cid)"), 
                       {"name": name, "eid": educational_id, "oid": next_omr_id, "cid": class_id})
@@ -94,6 +97,17 @@ def add_student(name, educational_id, class_id):
             return next_omr_id
     except Exception:
         return None
+
+def clear_class_students(class_id):
+    conn = get_connection()
+    try:
+        with conn.session as s:
+            s.execute(text("DELETE FROM results WHERE student_id IN (SELECT id FROM students WHERE class_id=:id)"), {"id": class_id})
+            s.execute(text("DELETE FROM students WHERE class_id=:id"), {"id": class_id})
+            s.commit()
+        return True
+    except Exception:
+        return False
 
 def get_students_by_class(class_id):
     conn = get_connection()

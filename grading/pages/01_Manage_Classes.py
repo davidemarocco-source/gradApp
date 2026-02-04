@@ -83,7 +83,27 @@ with tab2:
         
         # Show table
         st.divider()
-        st.subheader(f"Students in {selected_class_name}")
+        col_title, col_clear = st.columns([3, 1])
+        with col_title:
+            st.subheader(f"Students in {selected_class_name}")
+        with col_clear:
+            if st.button("🔥 Clear Class", help="Delete all students and results for this class"):
+                st.session_state[f"confirm_clear_class_{selected_class_id}"] = True
+        
+        if st.session_state.get(f"confirm_clear_class_{selected_class_id}"):
+            st.warning("Really delete ALL students? This cannot be undone.")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Yes, Clear Everything", key=f"force_clear_{selected_class_id}"):
+                    db_manager.clear_class_students(selected_class_id)
+                    del st.session_state[f"confirm_clear_class_{selected_class_id}"]
+                    st.success("Class cleared.")
+                    st.rerun()
+            with c2:
+                if st.button("Cancel", key=f"cancel_clear_{selected_class_id}"):
+                    del st.session_state[f"confirm_clear_class_{selected_class_id}"]
+                    st.rerun()
+
         students = db_manager.get_students_by_class(selected_class_id)
         if students:
             df_students = pd.DataFrame(students, columns=["ID", "Name", "Edu ID", "OMR ID"])
@@ -99,12 +119,11 @@ with tab3:
     if not classes:
         st.warning("Please create a class first.")
     else:
-        # Re-use logic or selectbox
         class_options_csv = {c[1]: c[0] for c in classes}
         selected_class_name_csv = st.selectbox("Select Target Class", list(class_options_csv.keys()), key="csv_sel")
         selected_class_id_csv = class_options_csv[selected_class_name_csv]
         
-        st.info("Upload a CSV file with headers: `Name`, `ID`. The system will auto-assign OMR IDs.")
+        st.info("CSV headers: `Name`, `ID` (Educational ID). Optional: `OMR_ID` (to force bubble numbering).")
         
         uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
         
@@ -114,39 +133,20 @@ with tab3:
                 st.write("Preview:")
                 st.dataframe(df.head())
                 
-                # Check for Italian headers: ID, COGNOME, NOME
-                # Or English fallbacks
+                col_map = {c.lower().replace(" ", ""): c for c in df.columns}
                 
-                col_map = {c.lower(): c for c in df.columns}
-                
-                # Logic:
-                # ID -> Educational ID
-                # COGNOME + NOME -> Name
-                
-                id_col = None
-                if "id" in col_map: 
-                    id_col = col_map["id"]
-                
-                cognome_col = None
-                if "cognome" in col_map:
-                    cognome_col = col_map["cognome"]
-                    
-                nome_col = None
-                if "nome" in col_map:
-                    nome_col = col_map["nome"]
-                
-                # Check if we have standard Name/ID as fallback
-                name_col = None
-                if "name" in col_map: name_col = col_map["name"]
+                id_col = col_map.get("id")
+                cognome_col = col_map.get("cognome")
+                nome_col = col_map.get("nome")
+                name_col = col_map.get("name")
+                omr_id_col = col_map.get("omrid") # New: support OMR_ID
                 
                 valid = False
                 if id_col:
                     if cognome_col and nome_col:
                         valid = True
-                        st.success(f"Detected columns: {id_col}, {cognome_col}, {nome_col}")
                     elif name_col:
                         valid = True
-                        st.success(f"Detected columns: {id_col}, {name_col}")
                 
                 if not valid:
                     st.error("CSV must contain columns: 'ID', 'COGNOME', 'NOME' (or 'ID', 'Name')")
@@ -160,6 +160,13 @@ with tab3:
                         for i, row in df.iterrows():
                             eid = str(row[id_col])
                             
+                            oid = None
+                            if omr_id_col:
+                                try:
+                                    oid = int(row[omr_id_col])
+                                except:
+                                    oid = None
+                            
                             if cognome_col and nome_col:
                                 c = str(row[cognome_col])
                                 n = str(row[nome_col])
@@ -167,7 +174,7 @@ with tab3:
                             else:
                                 nm = str(row[name_col])
                             
-                            res = db_manager.add_student(nm, eid, selected_class_id_csv)
+                            res = db_manager.add_student(nm, eid, selected_class_id_csv, omr_id=oid)
                             if res:
                                 count += 1
                             else:
