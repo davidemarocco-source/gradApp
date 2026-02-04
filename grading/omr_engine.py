@@ -226,48 +226,61 @@ def process_exam(image_path, num_questions=20):
         
     # Region 1: Student ID
     # Start: (130, 25)
-    # End: (130 + 50, 25 + 60) # roughly covers the grid
-    x1, y1 = to_px(130, 25)
-    x2, y2 = to_px(180, 85)
+    # End: (130 + 30, 25 + 60) # roughly covers the grid (50mm wide was 5 cols, 3 cols ~ 30mm)
+    # Actually, let's keep it generous to capture margin.
+    x1, y1 = to_px(125, 20)
+    x2, y2 = to_px(160, 85)
     roi_id = warped[y1:y2, x1:x2]
     
     # Process ID
-    # This is a grid of 10 rows (0-9) x 5 cols (digits)
-    # We read it as "Vertical" question? No, rows are numbers 0-9. 
-    # Actually, usually ID grids are: Cols=Digits, Rows=0-9. 
-    # You bubble '0' in col 1, '1' in col 2... 
-    # My PDF generator did: Row 0..9, Col 0..4.
-    # So iterating rows 0-9 means we are looking for which number is bubbled in each column?
-    # Wait, my PDF generator code:
-    # for row in range(10): pdf.cell(..., str(row))...
-    #    for col in range(5): ...
-    # This implies the grid is 10 rows high, 5 columns wide.
-    # Row 0 contains bubbles for '0' for all 5 digits?
-    # Yes. So to find the ID, we look at each COLUMN and see which ROW is bubbled.
-    # Standard OMR function `get_answers_from_roi` scans ROWS as questions.
-    # So if we simply rotate the ROI 90 degrees, we can reuse `get_answers_from_roi`?
-    # Or just write a specific `process_id_grid`.
+    # This is a grid of 10 rows (0-9) x 3 cols (digits)
+    # The `get_answers_from_roi` sorts contours top-to-bottom (rows).
+    # Since our grid is Vertical digits (row 0 is value 0 for all columns),
+    # Row 0 contains bubbles for '0' for the 100s, 10s, 1s place.
+    # Basically:
+    # Row 0: Bubble for 0 (Col 1), Bubble for 0 (Col 2), Bubble for 0 (Col 3)
+    # We want to find which row is bubbled for each column.
     
-    id_results = get_answers_from_roi(roi_id, num_questions=10, choices=5)
-    # This returns {row_idx: col_idx}. 
-    # row_idx (0-9) corresponds to the digit value.
-    # col_idx (0-4) corresponds to the position of the digit (10000s, 1000s, etc).
-    # We want {col_idx: row_idx}.
+    # Let's rotate the ROI 90 degrees? No, the bubbling logic is standard:
+    # Question = Row. Answer = Column.
+    # Here: Row = Digit Value (0-9). Column = Digit Position (100s, 10s, 1s).
+    # So `get_answers_from_roi` will return: {RowIdx (0-9): ColIdx (0-2)}.
+    # This means: "For Value 5 (Row 5), the student bubbled Column 1 (Tens place)".
+    # This format is valid but we need to reconstruct the full number.
+    # E.g. ID = 105.
+    # Row 0: Bubbled Col 1 (10s place has 0). Result: {0: 1}
+    # Row 1: Bubbled Col 0 (100s place has 1). Result: {1: 0}
+    # Row 5: Bubbled Col 2 (1s place has 5). Result: {5: 2}
+    # This relies on the student bubbling only ONE bubble per row? NO!
+    # A student might bubble '0' in Col 2 and '0' in Col 3 (ID 500).
+    # `get_answers_from_roi` assumes ONE answer per row. It won't work if multiple columns are bubbled in the same row.
+    # (e.g. ID 111 -> Row 1 has 3 bubbles. Logic will pick one).
     
-    # Actually `get_answers_from_roi` scans top-to-bottom.
-    # It will find 10 rows of bubbles.
-    # For each row (number 0..9), it finds which column (digit place) is bubbled.
-    # This means if I bubble '2' in the first column, 
-    # in row index 2, column index 0 will be detected.
+    # CONCLUSION: Standard multichoice logic (Row=Question) DOES NOT apply to this grid orientation easily
+    # UNLESS we treat COLUMNS as Questions.
+    # If we rotate the image 90 degrees, then:
+    # Columns become Rows.
+    # Col 1 (100s) -> Becomes Row 1. Bubbles 0..9 are choices A..J.
+    # This is exactly what we need!
     
-    student_id = ["?"] * 5
-    for number_val, digit_pos in id_results.items():
-        # number_val is the row (0-9)
-        # digit_pos is the column (0-4)
-        if 0 <= digit_pos < 5:
-            student_id[digit_pos] = str(number_val)
+    roi_id_rotated = cv2.rotate(roi_id, cv2.ROTATE_90_CLOCKWISE)
+    # Now: 
+    # Top-to-Bottom are the *Original Left-to-Right Columns* (100s, 10s, 1s).
+    # Left-to-Right are the *Original Top-to-Bottom Rows* (0..9).
+    
+    # We have 3 "Questions" (digits). Each has 10 Choices (0-9).
+    id_results = get_answers_from_roi(roi_id_rotated, num_questions=3, choices=10)
+    
+    # Returns {QuestionIdx (0-2): AnswerIdx (0-9)}
+    # Q0 -> 100s place. Answer 1 -> Value 1.
+    # This is perfect.
+    
+    student_id_str = ""
+    for i in range(3):
+        val = id_results.get(i, "?")
+        student_id_str += str(val)
             
-    roll_id = "".join(student_id)
+    omr_id = int(student_id_str) if student_id_str.isdigit() else None
     
     # Region 2: Answers
     # Col 1: X=30, Y=80. 
@@ -309,7 +322,7 @@ def process_exam(image_path, num_questions=20):
     return {
         "success": True,
         "warped_image": warped,
-        "roll_id": roll_id,
+        "omr_id": omr_id,
         "answers": final_answers
     }
 

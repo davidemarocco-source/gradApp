@@ -27,15 +27,35 @@ results = db_manager.get_results_by_exam(selected_exam_id)
 # student_id, name, roll_id, score
 
 if results:
-    df = pd.DataFrame(results, columns=["Student ID", "Name", "Roll ID", "Score"])
+    df = pd.DataFrame(results, columns=["Result ID", "Student ID", "Name", "Edu ID", "OMR ID", "Score"])
     
     # Calculate stats
     avg = df["Score"].mean()
     st.metric("Average Score", f"{avg:.2f}")
     
-    st.dataframe(df, hide_index=True)
-    
-    csv = df.to_csv(index=False).encode('utf-8')
+    # Custom table with delete buttons
+    st.write("---")
+    header_cols = st.columns([1, 2, 2, 1, 1, 1])
+    header_labels = ["ID", "Name", "Edu ID", "OMR ID", "Score", "Action"]
+    for col, label in zip(header_cols, header_labels):
+        col.write(f"**{label}**")
+        
+    for i, row in df.iterrows():
+        res_id = row["Result ID"]
+        cols = st.columns([1, 2, 2, 1, 1, 1])
+        cols[0].write(f"{res_id}")
+        cols[1].write(f"{row['Name']}")
+        cols[2].write(f"{row['Edu ID']}")
+        cols[3].write(f"{row['OMR ID']}")
+        cols[4].write(f"{row['Score']}")
+        
+        if cols[5].button("🗑️", key=f"del_res_{res_id}"):
+            db_manager.delete_result(res_id)
+            st.success(f"Result {res_id} deleted.")
+            st.rerun()
+            
+    st.divider()
+    csv = df.drop(columns=["Result ID"]).to_csv(index=False).encode('utf-8')
     st.download_button(
         label="Download CSV",
         data=csv,

@@ -89,3 +89,32 @@ else:
             with st.expander(f"{ex[1]} ({ex[2]})"):
                 details = db_manager.get_exam_details(ex[0])
                 st.json(json.loads(details[4]))
+                
+                # --- Actions ---
+                col_ex1, col_ex2 = st.columns(2)
+                with col_ex1:
+                    if st.button("🖨️ Generate Sheet", key=f"gen_{ex[0]}"):
+                        st.session_state['selected_exam_id'] = ex[0]
+                        st.session_state['selected_exam_class_id'] = class_options[selected_view_class]
+                        answer_key = json.loads(details[4])
+                        st.session_state['gen_exam_name'] = ex[1]
+                        st.session_state['gen_num_q'] = len(answer_key)
+                        st.switch_page("pages/05_Sheet_Generator.py")
+                
+                with col_ex2:
+                    if st.button("🗑️ Delete Exam", key=f"del_ex_{ex[0]}"):
+                        st.session_state[f"confirm_delete_ex_{ex[0]}"] = True
+                
+                if st.session_state.get(f"confirm_delete_ex_{ex[0]}"):
+                    st.warning(f"Are you sure you want to delete '{ex[1]}'? This will delete all its results!")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("Yes, Delete Exam", key=f"force_del_ex_{ex[0]}"):
+                            db_manager.delete_exam(ex[0])
+                            del st.session_state[f"confirm_delete_ex_{ex[0]}"]
+                            st.success(f"Exam '{ex[1]}' deleted.")
+                            st.rerun()
+                    with c2:
+                        if st.button("Cancel", key=f"cancel_del_ex_{ex[0]}"):
+                            del st.session_state[f"confirm_delete_ex_{ex[0]}"]
+                            st.rerun()

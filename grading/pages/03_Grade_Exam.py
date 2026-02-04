@@ -51,6 +51,7 @@ if input_method == "Upload Image":
 else:
     image_file = st.camera_input("Take a picture of the sheet")
 
+# --- Main Processing ---
 if image_file:
     # Convert to CV2
     file_bytes = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
@@ -60,81 +61,93 @@ if image_file:
     
     if st.button("Process & Grade"):
         with st.spinner("Analyzing..."):
-            # Save temp file for processing (engine takes path)
             temp_path = "temp_scan.jpg"
             cv2.imwrite(temp_path, image)
             
-            # Count questions from key
             num_qs = len(answer_key)
-            
-            # Process
             result = omr_engine.process_exam(temp_path, num_questions=num_qs)
             
             if result["success"]:
+                st.session_state['scan_result'] = result
+                st.session_state['manual_student_id'] = None # Reset manual override
                 st.success("Processing Complete!")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.image(result["warped_image"], caption="Warped View", channels="BGR")
-                
-                with col2:
-                    st.subheader("Results")
-                    roll_id = result["roll_id"]
-                    st.write(f"**Detected Roll ID:** {roll_id}")
-                    
-                    # Try to find student
-                    student = db_manager.get_student_by_roll(roll_id)
-                    student_id = None
-                    if student:
-                        st.success(f"Matched Student: **{student[1]}**")
-                        student_id = student[0]
-                    else:
-                        st.error("Student not found in DB!")
-                        # Allow manual override
-                        student_list = db_manager.get_students_by_class(selected_class_id)
-                        stu_opts = {s[1]: s[0] for s in student_list}
-                        sel_stu = st.selectbox("Manually Select Student", list(stu_opts.keys()))
-                        student_id = stu_opts[sel_stu]
-                        
-                    # Grading
-                    student_answers = result["answers"] # {1: 0, 2: 1} (0=A, 1=B...)
-                    
-                    score = 0
-                    total = 0
-                    
-                    graded_details = {}
-                    
-                    for q_str, proper_ans in answer_key.items():
-                        q_idx = int(q_str)
-                        
-                        # Student answer
-                        # My engine returns {1: 0}, 0 index.
-                        # My key has {1: "A"}.
-                        # Need map.
-                        idx_to_char = {0: "A", 1: "B", 2: "C", 3: "D", 4: "E"}
-                        
-                        stu_ans_idx = student_answers.get(q_idx)
-                        stu_ans_char = idx_to_char.get(stu_ans_idx, "?") if stu_ans_idx is not None else "N/A"
-                        
-                        is_correct = False
-                        if stu_ans_char == proper_ans:
-                            is_correct = True
-                            score += 1
-                        
-                        graded_details[q_idx] = {
-                            "student": stu_ans_char,
-                            "correct": proper_ans,
-                            "is_correct": is_correct
-                        }
-                        total += 1
-                        
-                    st.metric("Score", f"{score} / {total}")
-                    
-                    # Save
-                    if st.button("Save Grade"):
-                        # image path: usually save to disk properly with unique name
-                        # for demo we skip preserving image
-                        db_manager.save_result(selected_exam_id, student_id, score, graded_details, "scan.jpg")
-                        st.success("Saved to Database!")
-                        
             else:
+                st.session_state['scan_result'] = None
                 st.error(f"Failed: {result['error']}")
+
+# --- Results Display (Persists after reruns) ---
+if 'scan_result' in st.session_state and st.session_state['scan_result']:
+    result = st.session_state['scan_result']
+    st.divider()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.image(result["warped_image"], caption="Warped View", channels="BGR")
+    
+    with col2:
+        st.subheader("Results")
+        omr_id = result.get("omr_id")
+        st.write(f"**Detected OMR ID:** {omr_id}")
+        
+        student_id = None
+        
+        # 1. Try Auto-Match
+        if omr_id is not None:
+            student = db_manager.get_student_by_omr(selected_class_id, omr_id)
+            if student:
+                st.success(f"Matched Student:\n**{student[1]}**\n({student[2]})")
+                student_id = student[0]
+            else:
+                st.error(f"Student with OMR ID {omr_id} not found in this class!")
+        else:
+            st.error("Could not read OMR ID.")
+
+        # 2. Manual Override (If match failed or user wants to change)
+        student_list = db_manager.get_students_by_class(selected_class_id)
+        stu_opts = {f"{s[1]} (OMR: {s[3]})": s[0] for s in student_list}
+        
+        # Find index of current match if any
+        current_idx = 0
+        if student_id:
+            for i, sid in enumerate(stu_opts.values()):
+                if sid == student_id:
+                    current_idx = i
+                    break
+        
+        st.divider()
+        sel_stu_label = st.selectbox("Assign to Student", list(stu_opts.keys()), index=current_idx)
+        student_id = stu_opts[sel_stu_label]
+            
+        # 3. Grading Logic
+        student_answers = result["answers"]
+        score = 0
+        total = 0
+        graded_details = {}
+        idx_to_char = {0: "A", 1: "B", 2: "C", 3: "D", 4: "E"}
+        
+        for q_str, proper_ans in answer_key.items():
+            q_idx = int(q_str)
+            stu_ans_idx = student_answers.get(q_idx)
+            stu_ans_char = idx_to_char.get(stu_ans_idx, "?") if stu_ans_idx is not None else "N/A"
+            
+            is_correct = (stu_ans_char == proper_ans)
+            if is_correct:
+                score += 1
+            
+            graded_details[q_idx] = {
+                "student": stu_ans_char,
+                "correct": proper_ans,
+                "is_correct": is_correct
+            }
+            total += 1
+            
+        st.metric("Score", f"{score} / {total}")
+        
+        if st.button("Save Grade"):
+            # Use original student_id (either matched or selected from dropdown)
+            db_manager.save_result(selected_exam_id, student_id, score, graded_details, "scan.jpg")
+            st.success("Saved to Database!")
+            # Clear result after saving to prevent double submission
+            st.session_state['scan_result'] = None
+            st.rerun()
+
