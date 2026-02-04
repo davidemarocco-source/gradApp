@@ -224,101 +224,63 @@ def process_exam(image_path, num_questions=20):
     def to_px(mm_x, mm_y):
         return int((mm_x / 210.0) * w_target), int((mm_y / 297.0) * h_target)
         
-    # Region 1: Student ID
-    # Start: (130, 25)
-    # End: (130 + 30, 25 + 60) # roughly covers the grid (50mm wide was 5 cols, 3 cols ~ 30mm)
-    # Actually, let's keep it generous to capture margin.
-    x1, y1 = to_px(125, 20)
-    x2, y2 = to_px(160, 85)
-    roi_id = warped[y1:y2, x1:x2]
+    # Region 1: Student ID - Adjusted for new layout (x=140, y=45)
+    # id_start_x = 140, id_start_y = 45. Width: 3 cols * 10 + gap. Height: 10 rows * 8.
+    ix1, iy1 = to_px(135, 35) # Slightly wider/higher to be safe
+    ix2, iy2 = to_px(180, 130) 
+    roi_id = warped[iy1:iy2, ix1:ix2]
     
-    # Process ID
-    # This is a grid of 10 rows (0-9) x 3 cols (digits)
-    # The `get_answers_from_roi` sorts contours top-to-bottom (rows).
-    # Since our grid is Vertical digits (row 0 is value 0 for all columns),
-    # Row 0 contains bubbles for '0' for the 100s, 10s, 1s place.
-    # Basically:
-    # Row 0: Bubble for 0 (Col 1), Bubble for 0 (Col 2), Bubble for 0 (Col 3)
-    # We want to find which row is bubbled for each column.
-    
-    # Let's rotate the ROI 90 degrees? No, the bubbling logic is standard:
-    # Question = Row. Answer = Column.
-    # Here: Row = Digit Value (0-9). Column = Digit Position (100s, 10s, 1s).
-    # So `get_answers_from_roi` will return: {RowIdx (0-9): ColIdx (0-2)}.
-    # This means: "For Value 5 (Row 5), the student bubbled Column 1 (Tens place)".
-    # This format is valid but we need to reconstruct the full number.
-    # E.g. ID = 105.
-    # Row 0: Bubbled Col 1 (10s place has 0). Result: {0: 1}
-    # Row 1: Bubbled Col 0 (100s place has 1). Result: {1: 0}
-    # Row 5: Bubbled Col 2 (1s place has 5). Result: {5: 2}
-    # This relies on the student bubbling only ONE bubble per row? NO!
-    # A student might bubble '0' in Col 2 and '0' in Col 3 (ID 500).
-    # `get_answers_from_roi` assumes ONE answer per row. It won't work if multiple columns are bubbled in the same row.
-    # (e.g. ID 111 -> Row 1 has 3 bubbles. Logic will pick one).
-    
-    # CONCLUSION: Standard multichoice logic (Row=Question) DOES NOT apply to this grid orientation easily
-    # UNLESS we treat COLUMNS as Questions.
-    # If we rotate the image 90 degrees, then:
-    # Columns become Rows.
-    # Col 1 (100s) -> Becomes Row 1. Bubbles 0..9 are choices A..J.
-    # This is exactly what we need!
-    
+    # Process ID (Digits are rows, so rotate to process as questions)
     roi_id_rotated = cv2.rotate(roi_id, cv2.ROTATE_90_CLOCKWISE)
-    # Now: 
-    # Top-to-Bottom are the *Original Left-to-Right Columns* (100s, 10s, 1s).
-    # Left-to-Right are the *Original Top-to-Bottom Rows* (0..9).
-    
-    # We have 3 "Questions" (digits). Each has 10 Choices (0-9).
     id_results = get_answers_from_roi(roi_id_rotated, num_questions=3, choices=10)
-    
-    # Returns {QuestionIdx (0-2): AnswerIdx (0-9)}
-    # Q0 -> 100s place. Answer 1 -> Value 1.
-    # This is perfect.
     
     student_id_str = ""
     for i in range(3):
         val = id_results.get(i, "?")
         student_id_str += str(val)
-            
     omr_id = int(student_id_str) if student_id_str.isdigit() else None
     
-    # Region 2: Answers
-    # Col 1: X=30, Y=80. 
-    # Col 2: X=110, Y=80.
-    # Height per Q = 7mm.
-    # Let's just grab the whole bottom area.
-    # Split into 2 ROIs.
+    # Region 2: Answers - DYNAMIC COLUMN HANDLING
+    # Match the logic in 05_Sheet_Generator.py
+    if num_questions <= 20:
+        num_cols = 1
+        col_width_mm = 80
+    elif num_questions <= 40:
+        num_cols = 2
+        col_width_mm = 75
+    else:
+        num_cols = 3
+        col_width_mm = 60
+        
+    questions_per_col = (num_questions + num_cols - 1) // num_cols
+    grid_width_mm = num_cols * col_width_mm
+    x_base_start_mm = (210 - grid_width_mm) / 2
     
-    # ROI Answer Col 1
-    # X: 30 to 80 (approx 50mm width)
-    # Y: 80 to bottom margin (say 280)
-    ax1, ay1 = to_px(30, 80)
-    ax2, ay2 = to_px(90, 200) # Covers first 10-15 qs
-    roi_ans1 = warped[ay1:ay2, ax1:ax2]
-    
-    # ROI Answer Col 2
-    bx1, by1 = to_px(110, 80)
-    bx2, by2 = to_px(170, 200)
-    roi_ans2 = warped[by1:by2, bx1:bx2]
-    
-    # Process
-    # Assume 10 questions per column for now (based on PDF default 20 Qs)
-    # In a real app we'd calculate ROI height based on num_questions
-    
-    q_per_col = num_questions // 2
-    
-    ans1 = get_answers_from_roi(roi_ans1, num_questions=q_per_col, choices=5)
-    ans2 = get_answers_from_roi(roi_ans2, num_questions=num_questions - q_per_col, choices=5)
+    start_y_mm = 135
+    row_height_mm = 11
     
     final_answers = {}
     
-    for q_idx, choice_idx in ans1.items():
-        # q_idx is 0-based relative to ROI
-        final_answers[q_idx + 1] = choice_idx 
+    for c in range(num_cols):
+        # Calculate ROI for each column
+        col_x_start = x_base_start_mm + (c * col_width_mm)
+        # Give some padding to the ROI
+        roi_ax1, roi_ay1 = to_px(col_x_start - 2, start_y_mm - 5)
+        roi_ax2, roi_ay2 = to_px(col_x_start + col_width_mm + 2, 285) # down to bottom
         
-    for q_idx, choice_idx in ans2.items():
-        final_answers[q_idx + 1 + q_per_col] = choice_idx
+        roi_col = warped[roi_ay1:roi_ay2, roi_ax1:roi_ax2]
         
+        # Calculate how many questions are in this specific column
+        qs_in_this_col = min(questions_per_col, num_questions - (c * questions_per_col))
+        if qs_in_this_col <= 0:
+            continue
+            
+        col_answers = get_answers_from_roi(roi_col, num_questions=qs_in_this_col, choices=5)
+        
+        for q_rel_idx, choice_idx in col_answers.items():
+            abs_q_num = (c * questions_per_col) + q_rel_idx + 1
+            final_answers[abs_q_num] = choice_idx
+            
     return {
         "success": True,
         "warped_image": warped,
