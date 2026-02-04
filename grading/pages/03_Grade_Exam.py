@@ -74,7 +74,7 @@ if image_file:
             cv2.imwrite(temp_path, image)
             
             num_qs = len(answer_key)
-            result = omr_engine.process_exam(temp_path, num_questions=num_qs, mcq_choices=mcq_choices)
+            result = omr_engine.process_exam(temp_path, num_questions=num_qs, mcq_choices=mcq_choices, question_data=answer_key)
             
             st.session_state['scan_result'] = result
             st.session_state['manual_student_id'] = None # Reset manual override
@@ -137,21 +137,36 @@ if 'scan_result' in st.session_state and st.session_state['scan_result']:
         graded_details = {}
         idx_to_char = {0: "A", 1: "B", 2: "C", 3: "D", 4: "E"}
         
-        for q_str, proper_ans in answer_key.items():
+        for q_str, key_val in answer_key.items():
             q_idx = int(q_str)
+            
+            # Handle new format {"ans": "...", "type": "..."} vs old format "..."
+            if isinstance(key_val, dict):
+                proper_ans = key_val.get("ans")
+                q_type = key_val.get("type", "MCQ")
+            else:
+                proper_ans = key_val
+                q_type = "MCQ"
+            
             stu_ans_idx = student_answers.get(q_idx)
             stu_ans_char = idx_to_char.get(stu_ans_idx, "?") if stu_ans_idx is not None else "N/A"
             
-            is_correct = (stu_ans_char == proper_ans)
-            if is_correct:
-                score += 1
+            if q_type == "Numeric":
+                is_correct = False # Manual grading needed
+                stu_ans_char = "Num"
+            else:
+                is_correct = (stu_ans_char == proper_ans)
+                if is_correct:
+                    score += 1
             
             graded_details[q_idx] = {
                 "student": stu_ans_char,
                 "correct": proper_ans,
-                "is_correct": is_correct
+                "is_correct": is_correct,
+                "type": q_type
             }
-            total += 1
+            if q_type != "Numeric":
+                total += 1
             
         st.metric("Score", f"{score} / {total}")
         

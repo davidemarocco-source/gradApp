@@ -205,9 +205,9 @@ def get_answers_from_roi(roi, num_questions=5, choices=5):
     """
     return {}
 
-def process_exam(image_path, num_questions=20, mcq_choices=5):
+def process_exam(image_path, num_questions=20, mcq_choices=5, question_data=None):
     """
-    Main entry point to process a scanned exam sheet.
+    Full pipeline: Marker detection -> Warping -> Student ID -> Answers.
     """
     image = cv2.imread(image_path)
     if image is None:
@@ -312,6 +312,13 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
         
         for q_idx in range(qs_in_this_col):
             abs_q_num = (c * questions_per_col) + q_idx + 1
+            
+            # Skip numeric questions for bubble detection
+            q_data = question_data.get(str(abs_q_num), {}) if question_data else {}
+            q_type = q_data.get("type", "MCQ") if isinstance(q_data, dict) else "MCQ"
+            if q_type == "Numeric":
+                continue
+                
             row_y_mm = start_y_mm + (q_idx * row_height_mm)
             by_mm = row_y_mm + (10 - 6.5) / 2
             

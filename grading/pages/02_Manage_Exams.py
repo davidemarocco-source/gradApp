@@ -58,10 +58,10 @@ if 'draft_exam' in st.session_state:
                 
                 if q_type == "MCQ":
                    ans = st.selectbox(f"Q{q} Ans", mcq_options, key=f"q_{q}")
-                   key_data[q] = ans
+                   key_data[q] = {"ans": ans, "type": "MCQ"}
                 else:
                    ans = st.number_input(f"Q{q} Val", key=f"q_{q}", step=0.1)
-                   key_data[q] = ans
+                   key_data[q] = {"ans": ans, "type": "Numeric"}
 
         if st.form_submit_button("Save Exam"):
             db_manager.create_exam(draft['name'], draft['class_id'], draft['date'], key_data, draft['mcq_choices'])

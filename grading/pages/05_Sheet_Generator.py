@@ -50,6 +50,7 @@ with st.sidebar:
                     st.session_state['gen_exam_name'] = exam_details[1]
                     st.session_state['gen_num_q'] = len(answer_key)
                     st.session_state['gen_mcq_choices'] = exam_details[5]
+                    st.session_state['gen_question_data'] = answer_key # Store types
                     # Clear redirect state once handled
                     if 'selected_exam_id' in st.session_state:
                         del st.session_state['selected_exam_id']
@@ -60,7 +61,7 @@ with st.sidebar:
 
 st.divider()
 
-def create_sheet(num_questions=20, exam_name="Exam", mcq_choices=5):
+def create_sheet(num_questions=20, exam_name="Exam", mcq_choices=5, question_data=None):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", size=12)
@@ -135,14 +136,28 @@ def create_sheet(num_questions=20, exam_name="Exam", mcq_choices=5):
         pdf.set_xy(x_base, y)
         pdf.cell(12, row_height, f"{q}.", align='R')
         
-        options = ['A', 'B', 'C', 'D', 'E'][:mcq_choices]
-        pdf.set_font("Helvetica", size=8)
-        for i, opt in enumerate(options):
-            bx = x_base + 15 + (i * bubble_spacing)
-            by = y + (row_height - bubble_size) / 2
-            pdf.ellipse(bx, by, bubble_size, bubble_size)
-            pdf.set_xy(bx, by)
-            pdf.cell(bubble_size, bubble_size, opt, align='C')
+        # Check Type (Default to MCQ)
+        q_data = question_data.get(str(q), {}) if question_data else {}
+        q_type = q_data.get("type", "MCQ") if isinstance(q_data, dict) else "MCQ"
+        
+        if q_type == "Numeric":
+            # Draw a box for writing the number
+            box_w = 40
+            box_h = row_height - 3
+            pdf.rect(x_base + 15, y + 1.5, box_w, box_h)
+            pdf.set_font("Helvetica", 'I', 7)
+            pdf.set_xy(x_base + 15 + box_w + 2, y)
+            # pdf.cell(10, row_height, "(Write Number)")
+        else:
+            # Draw Bubbles (MCQ)
+            options = ['A', 'B', 'C', 'D', 'E'][:mcq_choices]
+            pdf.set_font("Helvetica", size=8)
+            for i, opt in enumerate(options):
+                bx = x_base + 15 + (i * bubble_spacing)
+                by = y + (row_height - bubble_size) / 2
+                pdf.ellipse(bx, by, bubble_size, bubble_size)
+                pdf.set_xy(bx, by)
+                pdf.cell(bubble_size, bubble_size, opt, align='C')
 
     # 4. Bottom Markers (At the end of the active area)
     # This creates a smaller box for the camera to focus on
@@ -167,7 +182,8 @@ num_q = st.number_input("Number of Questions", 1, 100, value=default_num_q)
 mcq_choices = st.number_input("MCQ Choices (2-5)", 2, 5, value=default_choices)
 
 if st.button("Generate PDF"):
-    pdf = create_sheet(num_q, exam_title, mcq_choices)
+    q_data = st.session_state.get('gen_question_data')
+    pdf = create_sheet(num_q, exam_title, mcq_choices, question_data=q_data)
     
     # Save to buffer
     pdf_output = pdf.output(dest='S').encode('latin-1')
