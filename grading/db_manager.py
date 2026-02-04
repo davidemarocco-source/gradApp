@@ -46,6 +46,14 @@ def init_db():
                         image_path TEXT,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )'''))
+        
+        # Migration: Add mcq_choices if it doesn't exist
+        try:
+            s.execute(text("ALTER TABLE exams ADD COLUMN IF NOT EXISTS mcq_choices INTEGER DEFAULT 5"))
+        except Exception:
+            # Column might already exist or DB might not support IF NOT EXISTS in ALTER (though Postgres does)
+            pass
+            
         s.commit()
 
 # --- Classes ---
