@@ -63,47 +63,36 @@ st.divider()
 def create_sheet(num_questions=20, exam_name="Exam", mcq_choices=5):
     pdf = FPDF()
     pdf.add_page()
-    
-    # Use standard fonts (Helvetica is safe and looks professional)
     pdf.set_font("Helvetica", size=12)
     
-    # Page setup
     width = 210
     height = 297
     margin = 15
-    
-    # 1. Fiducial Markers (Corner Squares) - Increased to 10mm for better detection
-    pdf.set_fill_color(0, 0, 0)
     marker_size = 10
-    # Top-Left
-    pdf.rect(margin, margin, marker_size, marker_size, 'F')
-    # Top-Right
-    pdf.rect(width - margin - marker_size, margin, marker_size, marker_size, 'F')
-    # Bottom-Left
-    pdf.rect(margin, height - margin - marker_size, marker_size, marker_size, 'F')
-    # Bottom-Right
-    pdf.rect(width - margin - marker_size, height - margin - marker_size, marker_size, marker_size, 'F')
     
-    # 2. Header
+    # 1. Header (Compact)
+    pdf.set_fill_color(0, 0, 0)
+    pdf.rect(margin, margin, marker_size, marker_size, 'F') # Top-Left
+    pdf.rect(width - margin - marker_size, margin, marker_size, marker_size, 'F') # Top-Right
+    
     header_x = margin + 15
     pdf.set_xy(header_x, margin)
-    pdf.set_font("Helvetica", 'B', 20)
-    pdf.cell(100, 10, exam_name.upper(), ln=1)
+    pdf.set_font("Helvetica", 'B', 16)
+    pdf.cell(100, 8, exam_name.upper(), ln=1)
+    pdf.set_font("Helvetica", size=10)
+    pdf.set_xy(header_x, margin + 8)
+    pdf.cell(100, 8, f"NAME: {'_'*35}  DATE: {'_'*12}", ln=1)
     
-    pdf.set_font("Helvetica", size=12)
-    pdf.set_xy(header_x, margin + 12)
-    pdf.cell(100, 10, f"NAME: {'_'*40}    DATE: {'_'*15}", ln=1)
-    
-    # 3. Student ID Grid (Top Right)
+    # 2. Student ID Grid (Y=30)
     id_start_x = 140
-    id_start_y = 45
-    pdf.set_xy(id_start_x, id_start_y - 8)
-    pdf.set_font("Helvetica", 'B', 10)
+    id_start_y = 30
+    pdf.set_font("Helvetica", 'B', 9)
+    pdf.set_xy(id_start_x, id_start_y - 6)
     pdf.cell(55, 5, "STUDENT ID", ln=1, align='C')
     
-    bubble_r = 5.5 # Increased from 4.5
-    bubble_gap_x = 10 # Increased from 8
-    bubble_gap_y = 8 # Increased from 6
+    bubble_r = 5.5
+    bubble_gap_x = 10
+    bubble_gap_y = 8
     
     for col in range(3):
         col_x = id_start_x + (col * bubble_gap_x) + 12
@@ -115,17 +104,12 @@ def create_sheet(num_questions=20, exam_name="Exam", mcq_choices=5):
             pdf.set_xy(bx, by)
             pdf.cell(bubble_r, bubble_r, str(row), align='C')
             
-    pdf.set_xy(id_start_x, id_start_y + 82)
-    pdf.set_font("Helvetica", 'I', 8)
-    pdf.cell(55, 5, "Riempi i cerchi completamente", ln=1, align='C')
-            
-    # 4. Answers Grid
-    start_y = 135 # Moved down more to give ID grid room
-    # Determine columns based on num_questions
-    if num_questions <= 20:
+    # 3. Answers Grid (Y=115) - Tighter thresholds for compactness
+    start_y = 115
+    if num_questions <= 12:
         num_cols = 1
         col_width = 80
-    elif num_questions <= 40:
+    elif num_questions <= 24:
         num_cols = 2
         col_width = 75
     else:
@@ -133,10 +117,11 @@ def create_sheet(num_questions=20, exam_name="Exam", mcq_choices=5):
         col_width = 60
     
     questions_per_col = (num_questions + num_cols - 1) // num_cols
-    bubble_size = 6.5 # Increased from 5
-    bubble_spacing = 9 # Increased from 7.5
-    row_height = 11 # Increased from 9
+    bubble_size = 6.5
+    bubble_spacing = 9
+    row_height = 10 # Reduced from 11 for better density
     
+    max_y_reached = start_y
     for q in range(1, num_questions + 1):
         col_idx = (q - 1) // questions_per_col
         q_idx = (q - 1) % questions_per_col
@@ -144,13 +129,12 @@ def create_sheet(num_questions=20, exam_name="Exam", mcq_choices=5):
         grid_width = num_cols * col_width
         x_base = (width - grid_width) / 2 + (col_idx * col_width)
         y = start_y + (q_idx * row_height)
+        max_y_reached = max(max_y_reached, y + row_height)
         
-        # Question Number
         pdf.set_font("Helvetica", 'B', 11)
         pdf.set_xy(x_base, y)
         pdf.cell(12, row_height, f"{q}.", align='R')
         
-        # Bubbles (Dynamic Choices)
         options = ['A', 'B', 'C', 'D', 'E'][:mcq_choices]
         pdf.set_font("Helvetica", size=8)
         for i, opt in enumerate(options):
@@ -159,6 +143,17 @@ def create_sheet(num_questions=20, exam_name="Exam", mcq_choices=5):
             pdf.ellipse(bx, by, bubble_size, bubble_size)
             pdf.set_xy(bx, by)
             pdf.cell(bubble_size, bubble_size, opt, align='C')
+
+    # 4. Bottom Markers (At the end of the active area)
+    # This creates a smaller box for the camera to focus on
+    bottom_y = max_y_reached + 10
+    pdf.set_fill_color(0, 0, 0)
+    pdf.rect(margin, bottom_y, marker_size, marker_size, 'F') # Bottom-Left
+    pdf.rect(width - margin - marker_size, bottom_y, marker_size, marker_size, 'F') # Bottom-Right
+    
+    pdf.set_xy(margin, bottom_y + 12)
+    pdf.set_font("Helvetica", 'I', 8)
+    pdf.cell(width - 2*margin, 5, "Scan standard: Focus the 4 squares in your camera view.", align='C')
             
     return pdf
 
