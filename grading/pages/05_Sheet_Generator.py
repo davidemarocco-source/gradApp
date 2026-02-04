@@ -49,6 +49,7 @@ with st.sidebar:
                     answer_key = json.loads(exam_details[4])
                     st.session_state['gen_exam_name'] = exam_details[1]
                     st.session_state['gen_num_q'] = len(answer_key)
+                    st.session_state['gen_mcq_choices'] = exam_details[5]
                     # Clear redirect state once handled
                     if 'selected_exam_id' in st.session_state:
                         del st.session_state['selected_exam_id']
@@ -59,7 +60,7 @@ with st.sidebar:
 
 st.divider()
 
-def create_sheet(num_questions=20, exam_name="Exam"):
+def create_sheet(num_questions=20, exam_name="Exam", mcq_choices=5):
     pdf = FPDF()
     pdf.add_page()
     
@@ -149,8 +150,8 @@ def create_sheet(num_questions=20, exam_name="Exam"):
         pdf.set_xy(x_base, y)
         pdf.cell(12, row_height, f"{q}.", align='R')
         
-        # Bubbles A-E
-        options = ['A', 'B', 'C', 'D', 'E']
+        # Bubbles (Dynamic Choices)
+        options = ['A', 'B', 'C', 'D', 'E'][:mcq_choices]
         pdf.set_font("Helvetica", size=8)
         for i, opt in enumerate(options):
             bx = x_base + 15 + (i * bubble_spacing)
@@ -164,12 +165,14 @@ def create_sheet(num_questions=20, exam_name="Exam"):
 # Use session state for inputs if available
 default_name = st.session_state.get('gen_exam_name', "Midterm Exam")
 default_num_q = st.session_state.get('gen_num_q', 20)
+default_choices = st.session_state.get('gen_mcq_choices', 5)
 
 exam_title = st.text_input("Exam Name for Header", value=default_name)
 num_q = st.number_input("Number of Questions", 1, 100, value=default_num_q)
+mcq_choices = st.number_input("MCQ Choices (2-5)", 2, 5, value=default_choices)
 
 if st.button("Generate PDF"):
-    pdf = create_sheet(num_q, exam_title)
+    pdf = create_sheet(num_q, exam_title, mcq_choices)
     
     # Save to buffer
     pdf_output = pdf.output(dest='S').encode('latin-1')

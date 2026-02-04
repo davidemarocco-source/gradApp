@@ -32,7 +32,8 @@ def init_db():
                         name TEXT NOT NULL,
                         class_id INTEGER REFERENCES classes(id),
                         date TEXT,
-                        answer_key TEXT
+                        answer_key TEXT,
+                        mcq_choices INTEGER DEFAULT 5
                     )'''))
         
         # Results Table
@@ -99,12 +100,12 @@ def get_student_by_omr(class_id, omr_id):
     return res.iloc[0].tolist() if not res.empty else None
 
 # --- Exams ---
-def create_exam(name, class_id, date, answer_key):
+def create_exam(name, class_id, date, answer_key, mcq_choices=5):
     conn = get_connection()
     key_json = json.dumps(answer_key)
     with conn.session as s:
-        res = s.execute(text("INSERT INTO exams (name, class_id, date, answer_key) VALUES (:name, :cid, :date, :key) RETURNING id"),
-                  {"name": name, "cid": class_id, "date": str(date), "key": key_json})
+        res = s.execute(text("INSERT INTO exams (name, class_id, date, answer_key, mcq_choices) VALUES (:name, :cid, :date, :key, :choices) RETURNING id"),
+                  {"name": name, "cid": class_id, "date": str(date), "key": key_json, "choices": mcq_choices})
         exam_id = res.fetchone()[0]
         s.commit()
     return exam_id
@@ -116,7 +117,7 @@ def get_exams_by_class(class_id):
 
 def get_exam_details(exam_id):
     conn = get_connection()
-    res = conn.query("SELECT id, name, class_id, date, answer_key FROM exams WHERE id=:id", params={"id": exam_id}, ttl=0)
+    res = conn.query("SELECT id, name, class_id, date, answer_key, mcq_choices FROM exams WHERE id=:id", params={"id": exam_id}, ttl=0)
     return res.iloc[0].tolist() if not res.empty else None
 
 # --- Results ---

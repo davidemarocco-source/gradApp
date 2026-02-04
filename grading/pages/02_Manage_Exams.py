@@ -21,11 +21,11 @@ with st.expander("Create New Exam", expanded=True):
         exam_date = st.date_input("Date", datetime.date.today())
         
         st.subheader("Answer Key")
-        num_questions = st.number_input("Number of Questions", min_value=1, max_value=100, value=10)
-        
-        # We can't dynamically add form rows inside a form based on input in the same form easily without rerun.
-        # So we submit the basic info first? Or we use state.
-        # Let's use a two-step process: Define Meta -> Define Key.
+        col_key1, col_key2 = st.columns(2)
+        with col_key1:
+            num_questions = st.number_input("Number of Questions", min_value=1, max_value=100, value=10)
+        with col_key2:
+            mcq_choices = st.number_input("MCQ Choices (2-5)", min_value=2, max_value=5, value=5)
         
         submitted = st.form_submit_button("Start Key Definition")
         
@@ -35,7 +35,8 @@ with st.expander("Create New Exam", expanded=True):
                     "name": exam_name,
                     "class_id": class_options[selected_class],
                     "date": str(exam_date),
-                    "num_questions": num_questions
+                    "num_questions": num_questions,
+                    "mcq_choices": mcq_choices
                 }
                 st.rerun()
             else:
@@ -49,24 +50,21 @@ if 'draft_exam' in st.session_state:
     with st.form("key_form"):
         key_data = {}
         cols = st.columns(5)
+        mcq_options = ["A", "B", "C", "D", "E"][:draft['mcq_choices']]
         
         for q in range(1, draft['num_questions'] + 1):
             with cols[(q-1)%5]:
-                # Options: A, B, C, D, E, or Numeric Value
-                # Simple approach: Text input for flexibility, or Selectbox.
-                # Let's use a selectbox for standard MCQ and a toggle for numeric.
-                
                 q_type = st.selectbox(f"Q{q} Type", ["MCQ", "Numeric"], key=f"q_type_{q}", label_visibility="collapsed")
                 
                 if q_type == "MCQ":
-                   ans = st.selectbox(f"Q{q} Ans", ["A", "B", "C", "D", "E"], key=f"q_{q}")
+                   ans = st.selectbox(f"Q{q} Ans", mcq_options, key=f"q_{q}")
                    key_data[q] = ans
                 else:
                    ans = st.number_input(f"Q{q} Val", key=f"q_{q}", step=0.1)
                    key_data[q] = ans
 
         if st.form_submit_button("Save Exam"):
-            db_manager.create_exam(draft['name'], draft['class_id'], draft['date'], key_data)
+            db_manager.create_exam(draft['name'], draft['class_id'], draft['date'], key_data, draft['mcq_choices'])
             st.success("Exam Saved!")
             del st.session_state['draft_exam']
             st.rerun()

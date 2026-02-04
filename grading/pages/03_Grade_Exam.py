@@ -35,14 +35,23 @@ selected_exam_id = exam_opts[selected_exam_label]
 
 # Load Exam Details (Key)
 exam_details = db_manager.get_exam_details(selected_exam_id)
-# id, name, class_id, date, answer_key
+# id, name, class_id, date, answer_key, mcq_choices
 answer_key = json.loads(exam_details[4]) 
-# key format: {"1": "A", "2": 3.5, ...} but from json it comes as strings?
-# Actually my save logic was: key_data[q] = ans. q is int.
-# json converts int keys to strings.
-# So answer_key will be {"1": "A", "2": "B"}
+mcq_choices = exam_details[5]
 
-# 2. Input Method
+# 2. Privacy & Tips
+with st.expander("ℹ️ Privacy & Mobile Scanning Tips"):
+    st.info("""
+    **Privacy Info**: Images are processed in real-time. They are temporarily stored only for the duration of the scan and are **not** saved permanently unless you click 'Save Grade' below.
+    
+    **Tips for Phone Scanning**:
+    - **Align the Squares**: Ensure all 4 black squares in the corners are visible and not Cut off.
+    - **Light is Key**: Avoid shadows. If possible, place the sheet on a flat surface in a well-lit room.
+    - **Hold Parallel**: Try to hold your phone parallel to the paper, not at an angle.
+    - **No Flash**: Flash often creates a glare on the paper that blinds the scanner.
+    """)
+
+# 3. Input Method
 input_method = st.radio("Input Method", ["Upload Image", "Camera"])
 
 image_file = None
@@ -57,23 +66,26 @@ if image_file:
     file_bytes = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
     image = cv2.imdecode(file_bytes, 1)
     
-    st.image(image, caption="Original Image", channels="BGR", use_container_width=True)
+    # st.image(image, caption="Original Image", channels="BGR", use_container_width=True)
     
-    if st.button("Process & Grade"):
+    if st.button("🚀 Process & Grade", use_container_width=True):
         with st.spinner("Analyzing..."):
             temp_path = "temp_scan.jpg"
             cv2.imwrite(temp_path, image)
             
             num_qs = len(answer_key)
-            result = omr_engine.process_exam(temp_path, num_questions=num_qs)
+            result = omr_engine.process_exam(temp_path, num_questions=num_qs, mcq_choices=mcq_choices)
+            
+            st.session_state['scan_result'] = result
+            st.session_state['manual_student_id'] = None # Reset manual override
             
             if result["success"]:
-                st.session_state['scan_result'] = result
-                st.session_state['manual_student_id'] = None # Reset manual override
                 st.success("Processing Complete!")
             else:
-                st.session_state['scan_result'] = None
                 st.error(f"Failed: {result['error']}")
+                # Show debug image to help alignment
+                if "debug_image" in result:
+                    st.image(result["debug_image"], caption="Scanner View (Align the 4 corners)", use_container_width=True)
 
 # --- Results Display (Persists after reruns) ---
 if 'scan_result' in st.session_state and st.session_state['scan_result']:

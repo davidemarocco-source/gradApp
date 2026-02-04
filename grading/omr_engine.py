@@ -47,40 +47,65 @@ def four_point_transform(image, pts):
 
     return warped
 
+def enhance_image(image):
+    """
+    Apply CLAHE and other contrast enhancements to handle shadows/lighting.
+    """
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl, a, b))
+    enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    return enhanced
+
 def find_document_corners(image):
     """
     Find the 4 corners of the document in the image.
-    Returns None if not found, otherwise returns the 4 points.
+    Tries multiple strategies for robust detection on mobile.
+    Returns (corners, debug_image)
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edged = cv2.Canny(blurred, 75, 200)
-
-    cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
     
-    # Sort contours by area, descending
-    if len(cnts) > 0:
-        cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+    # Strategy 1: Canny Edges
+    edged = cv2.Canny(blurred, 75, 200)
+    
+    strategies = [
+        ("Canny", edged),
+        ("Otsu", cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]),
+        ("Adaptive", cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2))
+    ]
+    
+    best_approx = None
+    
+    for name, processed in strategies:
+        cnts = cv2.findContours(processed.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cnts = cnts[0] if len(cnts) == 2 else cnts[1]
         
-        for c in cnts:
-            # Approximate the contour
-            peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-
-            # If our approximated contour has 4 points, we assume we found the document
-            if len(approx) == 4:
-                return approx.reshape(4, 2)
+        if len(cnts) > 0:
+            cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
+            for c in cnts:
+                peri = cv2.arcLength(c, True)
+                approx = cv2.approxPolyDP(c, 0.02 * peri, True)
                 
-    return None
+                if len(approx) == 4 and cv2.contourArea(c) > (image.shape[0] * image.shape[1] * 0.2):
+                    return approx.reshape(4, 2), edged
+                
+                # Keep the largest 4-point contour even if it doesn't meet the area threshold yet
+                if len(approx) == 4 and (best_approx is None or cv2.contourArea(c) > cv2.contourArea(best_approx)):
+                    best_approx = approx
+                    
+    if best_approx is not None:
+        return best_approx.reshape(4, 2), edged
+                
+    return None, edged
 
 def pre_process_image(image):
     """
     Basic preprocessing pipeline
     """
-    # Resize if too large to improve speed, keep aspect ratio? 
-    # For now, let's just work with original or standard width
-    return image
+    return enhance_image(image)
 
 def sort_contours(cnts, method="left-to-right"):
     """
@@ -172,7 +197,7 @@ def get_answers_from_roi(roi, num_questions=5, choices=5):
             
     return results
 
-def process_exam(image_path, num_questions=20):
+def process_exam(image_path, num_questions=20, mcq_choices=5):
     """
     Main entry point to process a scanned exam sheet.
     Returns:
@@ -188,13 +213,17 @@ def process_exam(image_path, num_questions=20):
     if image is None:
         return {"success": False, "error": "Could not read image"}
         
-    # 1. basic resize for consistency if needed?
-    # image = cv2.resize(image, (width, height))
+    # 1. Enhance and Resize for processing
+    image = enhance_image(image)
     
     # 2. Find Corners
-    corners = find_document_corners(image)
+    corners, debug_img = find_document_corners(image)
     if corners is None:
-        return {"success": False, "error": "Could not find document corners"}
+        return {
+            "success": False, 
+            "error": "Could not find document corners. Try to align the 4 corner squares in the view.",
+            "debug_image": debug_img
+        }
         
     # 3. Warp to A4 proportions (approx 210x297)
     # Let's map to a high-res flat image, e.g., 840x1188 (multiply by 4)
@@ -275,7 +304,7 @@ def process_exam(image_path, num_questions=20):
         if qs_in_this_col <= 0:
             continue
             
-        col_answers = get_answers_from_roi(roi_col, num_questions=qs_in_this_col, choices=5)
+        col_answers = get_answers_from_roi(roi_col, num_questions=qs_in_this_col, choices=mcq_choices)
         
         for q_rel_idx, choice_idx in col_answers.items():
             abs_q_num = (c * questions_per_col) + q_rel_idx + 1
@@ -284,6 +313,7 @@ def process_exam(image_path, num_questions=20):
     return {
         "success": True,
         "warped_image": warped,
+        "debug_image": debug_img,
         "omr_id": omr_id,
         "answers": final_answers
     }
