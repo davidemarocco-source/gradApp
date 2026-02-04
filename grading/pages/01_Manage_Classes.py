@@ -106,8 +106,15 @@ with tab2:
 
         students = db_manager.get_students_by_class(selected_class_id)
         if students:
-            df_students = pd.DataFrame(students, columns=["ID", "Name", "Edu ID", "OMR ID"])
-            st.dataframe(df_students, hide_index=True)
+            # Drop the first element (DB id) and use OMR ID + Name + Edu ID
+            # But let's keep it for processing and just hide it from the user
+            df_students = pd.DataFrame(students, columns=["DB_ID", "Name", "Edu ID", "OMR ID"])
+            
+            # Create a user-friendly sequential index starting from 0
+            df_students.insert(0, "No.", range(len(df_students)))
+            
+            # Display only the columns the user cares about
+            st.dataframe(df_students[["No.", "Name", "Edu ID", "OMR ID"]], hide_index=True)
         else:
             st.info("No students in this class.")
 

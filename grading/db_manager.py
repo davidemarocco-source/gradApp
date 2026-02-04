@@ -87,7 +87,7 @@ def add_student(name, educational_id, class_id, omr_id=None):
                 res = s.execute(text("SELECT MAX(omr_id) FROM students WHERE class_id=:class_id"), 
                                 {"class_id": class_id}).fetchone()
                 max_id = res[0]
-                next_omr_id = 1 if max_id is None else max_id + 1
+                next_omr_id = 0 if max_id is None else max_id + 1
             else:
                 next_omr_id = omr_id
             
