@@ -172,6 +172,12 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
         [0, h_target - 1]], dtype="float32")
         
     rect = order_points(corners.reshape(4, 2))
+    num_cols = 1
+    if num_questions > 20 and num_questions <= 40:
+        num_cols = 2
+    elif num_questions > 40:
+        num_cols = 3
+        
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(image, M, (w_target, h_target))
     
@@ -181,34 +187,32 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     all_bubble_centers = []
     
     # --- 1. Process Student ID (3 columns of digits 0-9) ---
-    # Layout matches Sheet Generator: 
-    # id_start_x = 140, id_start_y = 50
-    # cols = 3, rows = 10 (0-9)
-    # col_spacing = 10, row_spacing = 8
+    # Layout from Sheet_Generator: id_start_x=140, id_start_y=45, bubble_r=5.5
+    # col_x = id_start_x + (col * 10) + 12
+    # by = id_start_y + (row * 8)
     id_start_x = 140
-    id_start_y = 50
+    id_start_y = 45 # Corrected from 50
     id_digits = []
     
-    for c in range(3): # Col 0 (leftmost) to Col 2
-        col_x = id_start_x + (c * 10)
-        darkest_row = None
-        min_intensity = 255
-        
-        for r in range(10): # Row 0 to 9
+    for c in range(3):
+        col_x = id_start_x + (c * 10) + 12
+        intensities = []
+        for r in range(10):
             row_y = id_start_y + (r * 8)
-            px, py = to_px(col_x, row_y)
-            intensity = sample_bubble(warped, px, py, radius=7)
+            # Center of bubble: (col_x + 5.5/2, row_y + 5.5/2)
+            px, py = to_px(col_x + 2.75, row_y + 2.75)
+            intensity = sample_bubble(warped, px, py, radius=6)
+            intensities.append(intensity)
             
-            # 0=Black, 255=White. Darker = lower.
-            if intensity < min_intensity:
-                min_intensity = intensity
-                darkest_row = r
+        # Find the darkest bubble in the column
+        min_idx = np.argmin(intensities)
+        min_val = intensities[min_idx]
+        avg_val = np.mean(intensities)
         
-        # Threshold: Paper is usually > 200. Bubbles are ~150. Filled is < 100.
-        if darkest_row is not None and min_intensity < 180:
-            id_digits.append(str(darkest_row))
-            # Mark detected bubble
-            px, py = to_px(id_start_x + (c * 10), id_start_y + (darkest_row * 8))
+        # Heuristic: Darkest must be < 85% of the average intensity of the column
+        if min_val < (avg_val * 0.88):
+            id_digits.append(str(min_idx))
+            px, py = to_px(col_x + 2.75, id_start_y + (min_idx * 8) + 2.75)
             all_bubble_centers.append((px, py))
         else:
             id_digits.append("?")
@@ -233,8 +237,8 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     
     start_y_mm = 135
     row_height_mm = 11
-    # Bubble positions in a row: 
-    # x = start_x + 15 + (j * 10)
+    bubble_size_mm = 6.5
+    bubble_spacing_mm = 9 # Corrected from 10
     
     final_answers = {}
     
@@ -244,30 +248,31 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
         
         for q_idx in range(qs_in_this_col):
             abs_q_num = (c * questions_per_col) + q_idx + 1
-            row_y = start_y_mm + (q_idx * row_height_mm)
+            row_y_mm = start_y_mm + (q_idx * row_height_mm)
+            by_mm = row_y_mm + (11 - 6.5) / 2 # Center vertically in row
             
-            darkest_choice = None
-            min_intensity = 255
-            
+            row_intensities = []
             for j in range(mcq_choices):
-                bubble_x = col_x_start + 15 + (j * 10)
-                px, py = to_px(bubble_x, row_y + 2) # +2 for slight text offset
+                bx_mm = col_x_start + 15 + (j * bubble_spacing_mm)
+                # Sample at exact center
+                px, py = to_px(bx_mm + 3.25, by_mm + 3.25)
                 intensity = sample_bubble(warped, px, py, radius=8)
+                row_intensities.append(intensity)
                 
-                if intensity < min_intensity:
-                    min_intensity = intensity
-                    darkest_choice = j
+            min_idx = np.argmin(row_intensities)
+            min_val = row_intensities[min_idx]
+            avg_val = np.mean(row_intensities)
             
-            if darkest_choice is not None and min_intensity < 180:
-                final_answers[abs_q_num] = darkest_choice
-                # Mark detected bubble
-                px, py = to_px(col_x_start + 15 + (darkest_choice * 10), row_y + 2)
+            # Robust comparison: is the darkest bubble significantly darker than the row average?
+            if min_val < (avg_val * 0.90):
+                final_answers[abs_q_num] = min_idx
+                px, py = to_px(col_x_start + 15 + (min_idx * bubble_spacing_mm) + 3.25, by_mm + 3.25)
                 all_bubble_centers.append((px, py))
             
     # DRAW VISUAL BUBBLES
     for (cx, cy) in all_bubble_centers:
-        cv2.circle(warped, (cx, cy), 10, (0, 255, 0), 2) # Green ring
-        cv2.circle(warped, (cx, cy), 2, (0, 255, 0), -1) # Center dot
+        cv2.circle(warped, (cx, cy), 12, (0, 255, 0), 2) # Outer ring
+        cv2.circle(warped, (cx, cy), 3, (0, 255, 0), -1) # Center dot
             
     return {
         "success": True,
