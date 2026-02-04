@@ -156,7 +156,6 @@ def sample_bubble_hybrid(warped_image, ideal_px, ideal_py, search_r=6, sample_r=
     
     return final_avg, (best_px, best_py)
 
-def sample_bubble(warped_image, cx, cy, radius=8):
 
 def get_answers_from_roi(roi, num_questions=5, choices=5):
     """
