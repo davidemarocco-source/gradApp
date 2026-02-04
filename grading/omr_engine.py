@@ -124,74 +124,25 @@ def sort_contours(cnts, method="left-to-right"):
         
     return (cnts, boundingBoxes)
 
+def sample_bubble(warped_image, cx, cy, radius=8):
+    """
+    Check the darkness of a circular region at centered at (cx, cy).
+    Returns (average_intensity, bubble_mask_visual)
+    Since we are using 0=black, 255=white, lower means DARKER.
+    """
+    mask = np.zeros(warped_image.shape[:2], dtype="uint8")
+    cv2.circle(mask, (cx, cy), radius, 255, -1)
+    
+    # Get mean intensity of the grayscale version
+    gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
+    mean_val = cv2.mean(gray, mask=mask)[0]
+    return mean_val
+
 def get_answers_from_roi(roi, num_questions=5, choices=5):
     """
-    Process a ROI containing just the bubbles.
+    Deprecated: Using coordinate-based sampling instead.
     """
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
-    
-    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
-    
-    questionCnts = []
-    for c in cnts:
-        (x, y, wa, ha) = cv2.boundingRect(c)
-        ar = wa / float(ha)
-        if wa >= 15 and ha >= 15 and ar >= 0.7 and ar <= 1.3:
-            questionCnts.append(c)
-            
-    if not questionCnts:
-        return {}, []
-    
-    # 1. Sort all found bubbles by Y Coordinate
-    questionCnts = sorted(questionCnts, key=lambda c: cv2.boundingRect(c)[1])
-    
-    # 2. Cluster into Rows
-    rows = []
-    if questionCnts:
-        current_row = [questionCnts[0]]
-        for c in questionCnts[1:]:
-            prev_y = cv2.boundingRect(current_row[-1])[1]
-            curr_y = cv2.boundingRect(c)[1]
-            if abs(curr_y - prev_y) < 20: # Same row threshold
-                current_row.append(c)
-            else:
-                # Sort previous row left-to-right and add
-                rows.append(sorted(current_row, key=lambda c: cv2.boundingRect(c)[0]))
-                current_row = [c]
-        rows.append(sorted(current_row, key=lambda c: cv2.boundingRect(c)[0]))
-        
-    results = {}
-    bubble_centers = []
-    
-    # 3. Process each detected row
-    for q_idx, row_cnts in enumerate(rows):
-        if q_idx >= num_questions: break
-        
-        # If we have exactly the right number of bubbles, or can infer them
-        # For now, simple: find the "darkest" bubble in the row
-        bubbled = None
-        for (j, c) in enumerate(row_cnts):
-            if j >= choices: break
-            
-            mask = np.zeros(thresh.shape, dtype="uint8")
-            cv2.drawContours(mask, [c], -1, 255, -1)
-            mask = cv2.bitwise_and(thresh, thresh, mask=mask)
-            total = cv2.countNonZero(mask)
-            
-            if bubbled is None or total > bubbled[0]:
-                bubbled = (total, j, c)
-                
-        if bubbled and bubbled[0] > 60:
-            results[q_idx] = bubbled[1]
-            M = cv2.moments(bubbled[2])
-            if M["m00"] != 0:
-                cX = int(M["m10"] / M["m00"])
-                cY = int(M["m01"] / M["m00"])
-                bubble_centers.append((cX, cY))
-            
-    return results, bubble_centers
+    return {}
 
 def process_exam(image_path, num_questions=20, mcq_choices=5):
     """
@@ -227,50 +178,45 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     def to_px(mm_x, mm_y):
         return int((mm_x / 210.0) * w_target), int((mm_y / 297.0) * h_target)
         
-    # Region 1: Student ID - Adjusted for new layout (x=140, y=45)
-    ix1, iy1 = to_px(135, 35) 
-    ix2, iy2 = to_px(180, 130) 
-    roi_id = warped[iy1:iy2, ix1:ix2]
+    all_bubble_centers = []
     
-    # Process ID
-    # Since digits 0-9 are TOP to BOTTOM, and Cols are LEFT to RIGHT.
-    # To use `get_answers_from_roi` where rows=questions and cols=choices:
-    # We want Rows=Columns, Choices=Digits.
-    # So we rotate 90 degrees COUNTER-clockwise.
-    # Top (Row 0) becomes Left. Bottom (Row 9) becomes Right.
-    # Left (Col 0) becomes Bottom. Right (Col 2) becomes Top.
-    # Wait, 90 CCW:
-    # (x, y) -> (-y, x). 
-    # Left (small x) -> Bottom (small y). Right (large x) -> Top (large y). 
-    # Top (small y) -> Left (small x). Bottom (large y) -> Right (large x).
-    # This means:
-    # New Rows (Top to Bottom) = Original Right to Left (Col 2, 1, 0).
-    # New Cols (Left to Right) = Original Top to Bottom (Row 0, 1, ..., 9).
-    # Perfect! But columns are inverted. We can just flip them later or use 90 CCW + Flip.
+    # --- 1. Process Student ID (3 columns of digits 0-9) ---
+    # Layout matches Sheet Generator: 
+    # id_start_x = 140, id_start_y = 50
+    # cols = 3, rows = 10 (0-9)
+    # col_spacing = 10, row_spacing = 8
+    id_start_x = 140
+    id_start_y = 50
+    id_digits = []
     
-    roi_id_prep = cv2.rotate(roi_id, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    id_results, id_centers = get_answers_from_roi(roi_id_prep, num_questions=3, choices=10)
+    for c in range(3): # Col 0 (leftmost) to Col 2
+        col_x = id_start_x + (c * 10)
+        darkest_row = None
+        min_intensity = 255
+        
+        for r in range(10): # Row 0 to 9
+            row_y = id_start_y + (r * 8)
+            px, py = to_px(col_x, row_y)
+            intensity = sample_bubble(warped, px, py, radius=7)
+            
+            # 0=Black, 255=White. Darker = lower.
+            if intensity < min_intensity:
+                min_intensity = intensity
+                darkest_row = r
+        
+        # Threshold: Paper is usually > 200. Bubbles are ~150. Filled is < 100.
+        if darkest_row is not None and min_intensity < 180:
+            id_digits.append(str(darkest_row))
+            # Mark detected bubble
+            px, py = to_px(id_start_x + (c * 10), id_start_y + (darkest_row * 8))
+            all_bubble_centers.append((px, py))
+        else:
+            id_digits.append("?")
+            
+    student_id_str = "".join(id_digits)
+    omr_id = int(student_id_str) if "?" not in student_id_str else None
     
-    # Draw ID centers (back to warped coordinates)
-    # Rotation 90 CCW: x_new = y, y_new = rot_w - x
-    # Back to original ROI: x = rot_w - y_new, y = x_new
-    rot_w = roi_id_prep.shape[1]
-    for cx_rot, cy_rot in id_centers:
-        cx_orig = rot_w - cy_rot
-        cy_orig = cx_rot
-        cv2.circle(warped, (cx_orig + ix1, cy_orig + iy1), 8, (0, 255, 0), -1)
-        cv2.circle(warped, (cx_orig + ix1, cy_orig + iy1), 10, (255, 255, 255), 1)
-    
-    # RECONSTRUCT ID: Q0 is original Col 2, Q1 is Col 1, Q2 is Col 0.
-    # Wait, 90 CCW maps Col 0 (Left) to Bottom, Col 2 (Right) to Top.
-    # So Q0 is Col 2, Q1 is Col 1, Q2 is Col 0.
-    student_id_str = ""
-    for i in range(2, -1, -1): # Read in order: Q2 (Col 0), Q1 (Col 1), Q0 (Col 2)
-        val = id_results.get(i, "?")
-        student_id_str += str(val)
-    omr_id = int(student_id_str) if student_id_str.isdigit() else None
-    
-    # Region 2: Answers - DYNAMIC COLUMN HANDLING
+    # --- 2. Process Answer Grid ---
     if num_questions <= 20:
         num_cols = 1
         col_width_mm = 80
@@ -286,33 +232,42 @@ def process_exam(image_path, num_questions=20, mcq_choices=5):
     x_base_start_mm = (210 - grid_width_mm) / 2
     
     start_y_mm = 135
+    row_height_mm = 11
+    # Bubble positions in a row: 
+    # x = start_x + 15 + (j * 10)
+    
     final_answers = {}
-    all_bubble_centers = []
     
     for c in range(num_cols):
         col_x_start = x_base_start_mm + (c * col_width_mm)
-        roi_ax1, roi_ay1 = to_px(col_x_start - 2, start_y_mm - 5)
-        roi_ax2, roi_ay2 = to_px(col_x_start + col_width_mm + 2, 285) 
-        
-        roi_col = warped[roi_ay1:roi_ay2, roi_ax1:roi_ax2]
         qs_in_this_col = min(questions_per_col, num_questions - (c * questions_per_col))
-        if qs_in_this_col <= 0:
-            continue
-            
-        col_answers, col_centers = get_answers_from_roi(roi_col, num_questions=qs_in_this_col, choices=mcq_choices)
         
-        for q_rel_idx, choice_idx in col_answers.items():
-            abs_q_num = (c * questions_per_col) + q_rel_idx + 1
-            final_answers[abs_q_num] = choice_idx
+        for q_idx in range(qs_in_this_col):
+            abs_q_num = (c * questions_per_col) + q_idx + 1
+            row_y = start_y_mm + (q_idx * row_height_mm)
             
-        # Offset centers back to warped image
-        for cx, cy in col_centers:
-            all_bubble_centers.append((cx + roi_ax1, cy + roi_ay1))
+            darkest_choice = None
+            min_intensity = 255
+            
+            for j in range(mcq_choices):
+                bubble_x = col_x_start + 15 + (j * 10)
+                px, py = to_px(bubble_x, row_y + 2) # +2 for slight text offset
+                intensity = sample_bubble(warped, px, py, radius=8)
+                
+                if intensity < min_intensity:
+                    min_intensity = intensity
+                    darkest_choice = j
+            
+            if darkest_choice is not None and min_intensity < 180:
+                final_answers[abs_q_num] = darkest_choice
+                # Mark detected bubble
+                px, py = to_px(col_x_start + 15 + (darkest_choice * 10), row_y + 2)
+                all_bubble_centers.append((px, py))
             
     # DRAW VISUAL BUBBLES
     for (cx, cy) in all_bubble_centers:
-        cv2.circle(warped, (cx, cy), 8, (0, 255, 0), -1) # Solid green circle
-        cv2.circle(warped, (cx, cy), 10, (255, 255, 255), 1) # White outline
+        cv2.circle(warped, (cx, cy), 10, (0, 255, 0), 2) # Green ring
+        cv2.circle(warped, (cx, cy), 2, (0, 255, 0), -1) # Center dot
             
     return {
         "success": True,
